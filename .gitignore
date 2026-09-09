@@ -1,0 +1,19 @@
+# @author ygw
+
+node_modules/
+dist/
+.lake/
+lean/LeanHarnessSession_*/
+.idea/
+.vscode/
+*.log
+*.tmp
+.DS_Store
+.dsh-lean4-test/
+.source-identity-temp/
+
+# Lean LSP / compilation validation sessions and deliberately failing probes.
+lean/.dsh-lean4-*/
+lean/.lean-harness-session-*/
+lean/Probe.lean
+lean/PersistentValidationProbe.lean

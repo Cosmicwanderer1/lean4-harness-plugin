@@ -1,0 +1,34 @@
+{
+  "name": "lean4-harness-plugin",
+  "version": "0.1.0",
+  "description": "Lean 4 service and Harness tools for deepseek-harness.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "check": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "lean4",
+    "deepseek-harness",
+    "cordis",
+    "formal-verification"
+  ],
+  "license": "MIT",
+  "author": "ygw",
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  }
+}
