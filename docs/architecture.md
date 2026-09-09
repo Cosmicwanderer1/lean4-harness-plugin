@@ -1,7 +1,7 @@
 # Lean 4 Harness Plugin 架构说明
 
-> 作者：ygw  
-> 适用环境：Windows 11、deepseek-harness、本地 Lean 4.26.0、Mathlib 4  
+> 作者：ygw
+> 适用环境：Windows 11、deepseek-harness、本地 Lean 4.26.0、Mathlib 4
 > 状态：当前实现与后续演进设计均明确标注。
 
 ## 目标
