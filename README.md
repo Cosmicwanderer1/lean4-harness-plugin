@@ -141,7 +141,7 @@ lean4-harness-plugin/
 require mathlib from "D:/mathlib4"
 ```
 
-所以插件**不会**在安装时下载 Mathlib，也不会把 Mathlib 打包上传到 GitHub。当前电脑直接使用 `D:\mathlib4` 即可；另一台电脑若将 Mathlib 放在其他位置，必须先准备与 Lean 4.26.0 匹配的 Mathlib 4，然后修改 `lean/lakefile.lean` 中的路径并重新构建插件。仅修改 Bundle 的 `mathlibRoot` 配置不能改变 Lake 的依赖路径。
+所以插件**不会**在安装时下载 Mathlib库，也不会把 Mathlib库打包上传到 GitHub。当前电脑直接使用 `D:\mathlib4` 即可；另一台电脑若将 Mathlib 放在其他位置，必须先准备与 Lean 4.26.0 匹配的 Mathlib库，然后修改 `lean/lakefile.lean` 中的路径并重新构建插件。仅修改 Bundle 的 `mathlibRoot` 配置不能改变 Lake 的依赖路径。
 
 可以先执行以下环境检查：
 
@@ -154,7 +154,7 @@ Set-Location D:\lean4-harness-plugin
 
 ## 首次安装到 deepseek-harness
 
-以下步骤适用于新建或重新配置一个**独立** Harness Profile。使用独立 Profile 可以避免与旧的 `dsh-experimental-lean4-profile` 同时注册 `lean_check`。
+以下步骤适用于新建或重新配置一个**独立** Harness Profile。
 
 ### 1. 构建并测试插件
 
