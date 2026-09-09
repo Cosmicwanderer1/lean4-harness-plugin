@@ -3,7 +3,7 @@
 > 作者：ygw
 >
 > 当前发行版：`0.1.1`；当前实现：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
-> 本文明确区分“当前已实现”和“后续计划”；LeanCopilot 候选建议不是验证结果。
+> 本文只描述当前已实现的架构与运行边界。
 
 ## 一句话定义
 
@@ -21,21 +21,21 @@ deepseek-harness 不维护第二份 Lean 验证实现。它负责加载 Profile�
 
 ```mermaid
 flowchart TB
-  subgraph Host[deepseek-harness：宿主]
-    Profile[Web Profile]
-    Cordis[Cordis 运行时]
-    Tools[ctx.tools 工具注册表]
-    Approval[用户一次授权界面]
-    Prompt[模型系统提示]
+  subgraph Host["deepseek-harness：宿主"]
+    Profile["Web Profile"]
+    Cordis["Cordis 运行时"]
+    Tools["ctx.tools 工具注册表"]
+    Approval["用户一次授权界面"]
+    Prompt["模型系统提示"]
   end
 
-  subgraph Bundle[lean4-harness-plugin：可安装 Bundle]
-    Manifest[package.json\ndsh.bundle]
-    Patch[cordis.patch.yml]
-    Adapter[dsh-plugin.js\napply(ctx)]
-    Core[dist/index.js]
-    Service[LeanReplService]
-    Formatter[LeanFormatter]
+  subgraph Bundle["lean4-harness-plugin：可安装 Bundle"]
+    Manifest["package.json · dsh.bundle"]
+    Patch["cordis.patch.yml"]
+    Adapter["dsh-plugin.js · apply(ctx)"]
+    Core["dist/index.js"]
+    Service["LeanReplService"]
+    Formatter["LeanFormatter"]
   end
 
   Profile --> Manifest --> Patch --> Cordis
@@ -79,23 +79,23 @@ scripts/                            .dsh-lean4-*/ 中的本机 Profile / 日志
 
 ```mermaid
 flowchart TD
-  User[用户输入数学题] --> Agent[模型 Agent]
-  Skill[可选：lean-problem-formalizer Skill] -.规约题意.-> Agent
-  Agent -->|生成完整 Lean 源码| Tool[lean_check]
+  User["用户输入数学题"] --> Agent["模型 Agent"]
+  Skill["可选：lean-problem-formalizer Skill"] -.规约题意.-> Agent
+  Agent -->|生成完整 Lean 源码| Tool["lean_check"]
 
-  Tool --> Inspect[inspectImports\n提取精确 import 并检查本地 .olean]
+  Tool --> Inspect["inspectImports · 提取精确 import 并检查本地 .olean"]
   Inspect -->|所有导入已缓存| Verify
-  Inspect -->|缺少 Mathlib.* 子模块| Ask[Harness 请求用户一次授权]
-  Inspect -->|缺少非 Mathlib 模块或 import Mathlib| ConfigError[configuration_error]
+  Inspect -->|缺少 Mathlib.* 子模块| Ask["Harness 请求用户一次授权"]
+  Inspect -->|缺少非 Mathlib 模块或 import Mathlib| ConfigError["configuration_error"]
 
-  Ask -->|拒绝或取消| Denied[authorization_rejected / authorization_cancelled]
-  Ask -->|批准一次| Build[仅 lake build 已审核的精确模块]
-  Build -->|失败| BuildError[build_failed]
-  Build -->|成功| Restart[停止旧 LSP，释放 Windows 文件句柄]
-  Restart --> Verify[常驻 Lean LSP 检查]
+  Ask -->|拒绝或取消| Denied["authorization_rejected / authorization_cancelled"]
+  Ask -->|批准一次| Build["仅 lake build 已审核的精确模块"]
+  Build -->|失败| BuildError["build_failed"]
+  Build -->|成功| Restart["停止旧 LSP，释放 Windows 文件句柄"]
+  Restart --> Verify["常驻 Lean LSP 检查"]
 
-  Verify -->|无错误| Verified[verified / verified_with_warnings]
-  Verify -->|有错误| Invalid[invalid + 结构化诊断]
+  Verify -->|无错误| Verified["verified / verified_with_warnings"]
+  Verify -->|有错误| Invalid["invalid + 结构化诊断"]
   Invalid --> Agent
   Verified --> Agent
 ```
@@ -199,23 +199,3 @@ config:
 `requestTimeoutMs` 与 `buildTimeoutMs` 默认都是 600,000 毫秒，以避免旧 120 秒前台工具政策在首次大型导入时过早终止。`prewarm: true` 会把首次精确导入成本转移到 Profile 启动阶段；默认 `false` 则延迟到首个 `lean_check`。
 
 Profile 加载时 Cordis 调用 `apply(ctx)`；工具、系统提示和守卫通过 Context 注册。Profile 停止或插件卸载时，`ctx.effect` 调用服务 `stop()`，关闭 Lean 进程并清理临时会话。修改 TypeScript 源码或 `dist/` 后重启 Profile 即可；修改 `package.json` 或 `cordis.patch.yml` 后需要移除并重新安装 Bundle。
-
-## 后续演进（尚未实现）
-
-```mermaid
-flowchart LR
-  Diagnostics[Lean 诊断 / tactic state] --> Provider[LeanSuggestionProvider]
-  Provider --> Candidates[LeanCopilot 候选 tactic / 修正片段]
-  Candidates --> Sandbox[隔离验证会话]
-  Sandbox --> Lean[lean_check]
-  Lean -->|通过| Accepted[标记为 suggestion_verified]
-  Lean -->|失败| Rejected[保留为未验证候选]
-```
-
-LeanCopilot 后续接入必须遵守：
-
-1. 建议提供者与验证器解耦；
-2. 候选建议不能直接标记为证明成功；
-3. 每个候选必须在隔离会话中再次通过 Lean；
-4. 自动修正必须有迭代次数、总耗时、成本和人工关闭开关；
-5. LeanCopilot 不可用时，`lean_check` 的基础验证能力必须继续工作。
