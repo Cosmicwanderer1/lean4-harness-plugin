@@ -7,6 +7,9 @@
     - id: lean4-harness-plugin
       name: 'lean4-harness-plugin/dsh'
       config:
+        # Keep the guard aligned with lean/lakefile.lean's local Mathlib path.
+        # @author ygw
+        mathlibRoot: 'D:/mathlib4'
         requestTimeoutMs: 600000
         buildTimeoutMs: 600000
         prewarm: false

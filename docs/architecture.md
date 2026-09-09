@@ -1,104 +1,221 @@
 # Lean 4 Harness Plugin 架构说明
 
 > 作者：ygw
-> 适用环境：Windows 11、deepseek-harness、本地 Lean 4.26.0、Mathlib 4
-> 状态：当前实现与后续演进设计均明确标注。
+>
+> 当前实现：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
+> 本文明确区分“当前已实现”和“后续计划”；LeanCopilot 候选建议不是验证结果。
 
-## 目标
+## 一句话定义
 
-本插件让 `deepseek-harness` 中的模型能够获得 Lean 4 的可信反馈：模型生成源码，Lean 编译器/LSP 给出唯一权威的验证结果。插件不会因代码“看起来正确”而把证明标记为成功。
+`lean4-harness-plugin` 是一个可安装的 deepseek-harness Bundle。它向模型提供 Lean 4 的可信外部反馈，使模型形成下面的验证闭环：
+
+```text
+生成 Lean 代码 → 调用 lean_check → 接收 Lean 诊断 → 修改代码 → 再验证
+```
+
+Lean 实际检查结果是唯一的正确性依据。
+
+## 两层架构：Harness 宿主与独立插件
+
+deepseek-harness 不维护第二份 Lean 验证实现。它负责加载 Profile、调度模型工具、呈现用户授权和管理会话；Lean 相关核心由本仓库维护。
 
 ```mermaid
 flowchart TB
-  User[用户] --> Web[deepseek-harness Web UI]
-  Web --> Agent[模型 Agent]
-
-  subgraph Formalization[题目规约层：已实现]
-    Skill[lean-problem-formalizer Skill]
+  subgraph Host[deepseek-harness：宿主]
+    Profile[Web Profile]
+    Cordis[Cordis 运行时]
+    Tools[ctx.tools 工具注册表]
+    Approval[用户一次授权界面]
+    Prompt[模型系统提示]
   end
 
-  Agent --> Skill
-  Agent -->|完整 Lean 源码| Check[lean_check]
-
-  subgraph Guard[导入与安全控制层：已实现]
-    Check --> Inspect[精确 import 与 .olean 检查]
-    Inspect -->|命中| Verify
-    Inspect -->|缺失精确 Mathlib 模块| Approval[用户一次授权]
-    Approval -->|允许| BoundedBuild[仅构建授权的精确模块]
-    Approval -->|拒绝或取消| Stop[返回可读状态]
-    BoundedBuild --> Verify
-    GuardTool[最终工具守卫] -.阻止.-> DirectLake[模型直接执行 Lake]
-    GuardTool -.阻止.-> WriteMathlib[模型修改 Mathlib]
+  subgraph Bundle[lean4-harness-plugin：可安装 Bundle]
+    Manifest[package.json\ndsh.bundle]
+    Patch[cordis.patch.yml]
+    Adapter[dsh-plugin.js\napply(ctx)]
+    Core[dist/index.js]
+    Service[LeanReplService]
+    Formatter[LeanFormatter]
   end
 
-  subgraph Verification[常驻验证层：已实现]
-    Verify[Lean4Local Provider] --> Queue[串行请求队列]
-    Queue --> LSP[常驻 lean --server]
-    LSP --> Document[固定 Validation.lean 文档]
-    Document --> Diagnostics[结构化诊断]
-  end
-
-  subgraph Local[本地可复现环境：已实现]
-    Workspace[lean/ Lake 工作区]
-    Toolchain[Lean 4.26.0]
-    Cache[D:/mathlib4 的 .olean 缓存]
-  end
-
-  Verify --> Workspace
-  Verify --> Cache
-  Diagnostics --> Check
-  Check --> Agent
-
-  subgraph Future[后续演进：尚未接入]
-    Copilot[LeanCopilot 建议适配器]
-    Repair[有上限的建议 -> 再验证循环]
-    Copilot --> Repair
-  end
-
-  Diagnostics -.提供上下文.-> Copilot
-  Repair -.候选必须再验证.-> Check
+  Profile --> Manifest --> Patch --> Cordis
+  Cordis --> Adapter
+  Adapter --> Tools
+  Adapter --> Prompt
+  Adapter --> Approval
+  Adapter --> Core
+  Core --> Service
+  Core --> Formatter
 ```
 
-## 当前验证闭环
+加载关系是固定的：
 
-1. 用户输入数学题，模型可先借助 `lean-problem-formalizer` 规约变量、量词、定义、假设和结论。
-2. 模型生成完整 Lean 4 源码，并调用 `lean_check`。
-3. 插件检查源码中的精确 `import` 是否在本地已有对应 `.olean`。
-4. 缓存命中时，源码会提交给同一个常驻 Lean LSP 进程的固定内部文档，以增量方式获得诊断。
-5. Lean 验证通过才返回 `verified` 或 `verified_with_warnings`；失败则返回结构化的文件、行、列、严重级别和原始诊断，供模型修改后再次验证。
+1. `package.json` 的 `dsh.bundle.patch` 声明 `cordis.patch.yml`；
+2. Profile 安装包后，Harness 将 patch 叠加进配置树；
+3. patch 插入 `lean4-harness-plugin/dsh`；
+4. Harness 通过 `package.json` 的导出映射加载根目录 `dsh-plugin.js`；
+5. `dsh-plugin.js` 导出 `apply(ctx)`，在 Cordis 生命周期中创建服务并注册工具；
+6. 它直接导入仓库构建产物 `dist/index.js`，避免在 Harness 源码目录维护复制版逻辑。
 
-正常验证不会重新下载或全量构建 Mathlib。常驻服务通过已经解析的 Lake 环境读取本地 `.olean`，并且内部文档使用 `dependencyBuildMode: "never"`，阻止临时验证触发依赖构建、远程缓存访问或下载。
+`src/index.ts` 是 TypeScript 验证核心的公共 API，供其他 TypeScript 宿主嵌入；它**不是** DSH 运行时入口。对于 deepseek-harness，入口始终是根目录 `dsh-plugin.js`。
 
-## 缺失模块与授权边界
+## 源码、构建产物与运行状态
 
-只有缺少明确的 `Mathlib.*` 子模块时，Bundle 才会向用户展示模块和精确构建目标，并请求一次授权。用户批准后，只允许构建该授权目标和 Lake 的必要依赖，服务重启后再验证原始源码。
+```text
+GitHub / 源码仓库                   本机构建或运行状态
+────────────────────────────────   ─────────────────────────────────
+package.json                        dist/（npm run build 生成）
+cordis.patch.yml                    Profile 配置树中的 Bundle layer
+dsh-plugin.js                       Cordis 已加载的插件实例
+src/                                LeanReplService 的常驻进程状态
+lean/                               lean/.lake/ 与临时 Validation.lean
+skills/                             DSH_HOME/skills 中已安装的可选 Skill
+scripts/                            .dsh-lean4-*/ 中的本机 Profile / 日志
+```
 
-以下情况均不会触发构建：用户拒绝或取消、授权通道不可用、缺失的不是 Mathlib 子模块，以及使用顶层聚合导入 `import Mathlib`。模型也被最终工具守卫阻止直接运行 `lake build`、`lake update`、`lake clean`、`lake exe` 或修改 `D:/mathlib4`。
+`dist/`、`node_modules/`、`lean/.lake/`、临时 LSP 会话和 `.dsh-*` Profile 都是本机生成物，不提交到 GitHub。GitHub 从源码安装时会运行 `prepare` 生成 `dist/`。
 
-## 组件职责
+## 当前验证闭环（已实现）
 
-| 组件 | 当前状态 | 职责 |
+```mermaid
+flowchart TD
+  User[用户输入数学题] --> Agent[模型 Agent]
+  Skill[可选：lean-problem-formalizer Skill] -.规约题意.-> Agent
+  Agent -->|生成完整 Lean 源码| Tool[lean_check]
+
+  Tool --> Inspect[inspectImports\n提取精确 import 并检查本地 .olean]
+  Inspect -->|所有导入已缓存| Verify
+  Inspect -->|缺少 Mathlib.* 子模块| Ask[Harness 请求用户一次授权]
+  Inspect -->|缺少非 Mathlib 模块或 import Mathlib| ConfigError[configuration_error]
+
+  Ask -->|拒绝或取消| Denied[authorization_rejected / authorization_cancelled]
+  Ask -->|批准一次| Build[仅 lake build 已审核的精确模块]
+  Build -->|失败| BuildError[build_failed]
+  Build -->|成功| Restart[停止旧 LSP，释放 Windows 文件句柄]
+  Restart --> Verify[常驻 Lean LSP 检查]
+
+  Verify -->|无错误| Verified[verified / verified_with_warnings]
+  Verify -->|有错误| Invalid[invalid + 结构化诊断]
+  Invalid --> Agent
+  Verified --> Agent
+```
+
+具体流程：
+
+1. 模型调用 `lean_check(source, file_name)`；
+2. 服务从源码提取去重后的显式 `import`，只读取 Lake 解析出的搜索路径中的 `.olean`；
+3. 缓存命中时，源码会提交到同一个常驻 Lean LSP 的内部 `Validation.lean`；
+4. 调用者给出的 `file_name` 仅用于展示诊断，不会为每次检查新建文件或新开 Lean 进程；
+5. Lean 无错误才返回 `verified` 或 `verified_with_warnings`；有错误则返回 `invalid` 和文件、行、列、严重级别、消息；
+6. 模型应依据诊断修改源码并再次调用 `lean_check`。
+
+## 常驻 Lean LSP 与缓存策略（已实现）
+
+```mermaid
+sequenceDiagram
+  participant Model as 模型
+  participant Tool as lean_check
+  participant Service as LeanReplService
+  participant Lake as lake env
+  participant LSP as lean --server
+  participant Cache as D:/mathlib4 .olean
+
+  Model->>Tool: 完整 Lean 源码
+  Tool->>Service: inspectImports(source)
+  Service->>Lake: 仅首次读取 Lake 环境
+  Service->>Cache: 查找精确导入的 .olean
+  Tool->>Service: checkSource(source)
+  Service->>LSP: 首次按需启动
+  LSP->>Cache: 读取已编译声明
+  LSP-->>Service: 诊断
+  Service-->>Tool: success、status、diagnostics
+  Tool-->>Model: 可修改的验证反馈
+
+  Note over LSP: 后续检查复用同一 LSP 和同一 Validation.lean
+```
+
+默认 `prewarm: false`。这意味着启动 Web Profile 时不立即加载 Mathlib；首次 `lean_check` 才按需启动 Lean。首次大型导入可能慢，但它读取的是本地 `.olean`，不是 Mathlib 全量构建。之后 `reusedProcess: true` 表示服务复用了常驻进程。
+
+内部验证文档以 `dependencyBuildMode: "never"` 打开，因此普通检查不能触发 `lake update`、远程缓存下载或隐式依赖构建。
+
+## 导入补齐与安全边界（已实现）
+
+所有模型代码、文件名和导入都属于不可信输入。构建边界如下：
+
+| 场景 | 插件行为 |
+| --- | --- |
+| 精确 `Mathlib.*` 模块已有 `.olean` | 直接验证，不请求授权。 |
+| 精确 `Mathlib.*` 模块缺失 | 向用户说明模块名；仅一次批准后才构建。 |
+| 缺失的不是 `Mathlib.*` | 返回 `configuration_error`，永不构建。 |
+| 顶层 `import Mathlib` | 不作为可授权的精确构建目标。 |
+| 调用方复制或篡改检查对象 | 服务拒绝；构建目标必须与原始检查快照和对象身份一致。 |
+| 模型直接运行 Lake 构建命令 | 最终工具守卫拒绝。 |
+| 模型写入 Mathlib 根目录 | 最终工具守卫拒绝。 |
+
+即使用户批准，服务也只以参数数组执行等价于 `lake build <精确 Mathlib 模块>` 的受控命令。它不接受模型自由拼接 Lake 命令，不执行全量 Mathlib 构建，也不执行 `lake update`、`lake clean` 或 `lake exe`。
+
+## 本地环境边界（已实现）
+
+`lean/` 是插件的 Lake 工作区，不是 Python 虚拟环境。当前工作区锁定：
+
+```text
+Lean：    leanprover/lean4:v4.26.0
+Mathlib：D:/mathlib4（本地 path dependency）
+```
+
+`lean/lakefile.lean` 当前明确引用 `D:/mathlib4`。安装 Bundle 不会下载 Lean 或 Mathlib；另一台电脑必须自行准备版本匹配的 Lean 4 与 Mathlib 4，并在 Mathlib 路径不同的情况下修改 Lake 配置。
+
+Bundle 的 `mathlibRoot` 配置决定写入守卫的保护范围，但不能替代 Lake 的 path dependency。两处路径必须保持一致。
+
+## 模型工具与用户体验（已实现）
+
+| 工具 | 面向谁 | 建议使用方式 |
 | --- | --- | --- |
-| `lean-problem-formalizer` | 已实现 | 忠实规约自然语言题目，核对图片、OCR 与文本中的符号差异。 |
-| `lean_check` | 已实现 | 调用导入检查与常驻验证服务，返回稳定状态及结构化诊断。 |
-| `LeanReplService` | 已实现 | 管理 Lean 子进程、超时、请求关联、LSP/JSON 行兼容模式和会话清理。 |
-| `LeanFormatter` | 已实现 | 格式化诊断与 tactic state，输出便于模型继续处理的 Markdown。 |
-| Mathlib 访问控制 | 已实现 | 优先复用本地 `.olean`，对缺失的精确模块执行用户授权的最小构建。 |
-| LeanCopilot 适配器 | 尚未接入 | 未来只提供候选 tactic 或修正建议，不能替代 Lean 验证。 |
-| 自动修正闭环 | 尚未接入 | 未来在次数、时间、成本与人工关闭开关的限制下执行。 |
+| `lean_check` | 所有 Lean 证明任务 | 每次产生完整第一版或修改版源码后调用。 |
+| `lean_repl_request` | 高级 LSP / JSON 行调试 | 普通证明不要调用，优先 `lean_check`。 |
+| `lean_format_tactic_state` | 目标状态展示和后续建议适配 | 将原始 tactic state 转为结构化目标和 Markdown。 |
 
-## LeanCopilot 的后续原则
+插件的系统提示要求模型：选择最小精确 Mathlib 导入；完成前调用 `lean_check`；不使用顶层 `import Mathlib` 作为默认导入；不直接执行 Lake 维护命令；不修改 Mathlib。
 
-LeanCopilot 输出始终只是候选建议。后续接入将通过独立的建议提供者接口，与 `lean_check` 解耦；候选会在独立会话中重新验证，只有通过 Lean 的候选才可能标记为可靠结果。建议服务不可用、超时或返回空内容时，基础验证能力仍可单独工作。
+`lean-problem-formalizer` 是随仓库提供、但需要通过脚本安装到 `DSH_HOME/skills` 的**可选** Skill。它规约题意，不负责验证，也不会自动替代 `lean_check`。
 
-## 本地与 GitHub 的边界
+## Bundle 配置和生命周期（已实现）
 
-- GitHub 仓库保存可复用的源码、配置、脚本、README、测试、Skill 和本文件。
-- `.specstory/` 保存本机开发过程、会话记录和工作草稿，已被 `.gitignore` 排除，不会上传。
-- `node_modules/`、`dist/`、`lean/.lake/` 和临时 Lean 验证会话也只保留在本机。
+关键配置如下：
 
-## DSH Bundle 接入方式
+```yaml
+config:
+  workspaceRoot: 'D:/lean4-harness-plugin/lean' # 可选；默认使用包内 lean/
+  mathlibRoot: 'D:/mathlib4'                    # 应与 lakefile.lean 一致
+  lakeCommand: 'lake'
+  leanCommand: 'lean'
+  requestTimeoutMs: 600000
+  buildTimeoutMs: 600000
+  prewarm: false
+  prewarmSource: |
+    import Mathlib.Data.Nat.Basic
+```
 
-本仓库也是一个可安装的 DSH Bundle：`package.json` 的 `dsh.bundle` 指向 `cordis.patch.yml`，该配置层加载 `lean4-harness-plugin/dsh`。此入口只承担 Cordis 生命周期、模型工具注册和最终 Mathlib 工具守卫；它直接复用同一仓库 `dist/` 中的 `LeanReplService` 与 `LeanFormatter`，避免在 `deepseek-harness` 源码目录维护第二份验证核心。适配层通过宿主已经注入的 `ctx.tools` 注册标准 JSON Schema 工具，不将 `@deepseek-ai/dsh-tools` 作为独立发行依赖，避免 Git 安装时出现内部包下载、授权或版本漂移问题。
+`requestTimeoutMs` 与 `buildTimeoutMs` 默认都是 600,000 毫秒，以避免旧 120 秒前台工具政策在首次大型导入时过早终止。`prewarm: true` 会把首次精确导入成本转移到 Profile 启动阶段；默认 `false` 则延迟到首个 `lean_check`。
 
-开发时使用 `dsh plugin --profile <名称> add link:<插件绝对路径>`。DSH 将本地仓库链接到该 Profile 的依赖目录，并应用 Bundle 的 patch；启动该 Profile 后，模型即可获得 `lean_check`、`lean_repl_request` 与 `lean_format_tactic_state`。默认在首次 `lean_check` 时启动 Lean，之后保留同一常驻 LSP 文档；需要把首个导入成本转移到 Profile 启动阶段时，才显式设置 `prewarm: true`。源码改动后重新构建插件并重启 DSH 即可生效；只有 Bundle 元数据或 patch 改动才需要移除并重新添加。分发时也可使用 `github:Cosmicwanderer1/lean4-harness-plugin#<已审阅提交哈希>`；由于 Git 安装从源码执行 `prepare` 构建，用户必须按 pnpm 的提示明确授予该可信提交构建权限。
+Profile 加载时 Cordis 调用 `apply(ctx)`；工具、系统提示和守卫通过 Context 注册。Profile 停止或插件卸载时，`ctx.effect` 调用服务 `stop()`，关闭 Lean 进程并清理临时会话。修改 TypeScript 源码或 `dist/` 后重启 Profile 即可；修改 `package.json` 或 `cordis.patch.yml` 后需要移除并重新安装 Bundle。
+
+## 后续演进（尚未实现）
+
+```mermaid
+flowchart LR
+  Diagnostics[Lean 诊断 / tactic state] --> Provider[LeanSuggestionProvider]
+  Provider --> Candidates[LeanCopilot 候选 tactic / 修正片段]
+  Candidates --> Sandbox[隔离验证会话]
+  Sandbox --> Lean[lean_check]
+  Lean -->|通过| Accepted[标记为 suggestion_verified]
+  Lean -->|失败| Rejected[保留为未验证候选]
+```
+
+LeanCopilot 后续接入必须遵守：
+
+1. 建议提供者与验证器解耦；
+2. 候选建议不能直接标记为证明成功；
+3. 每个候选必须在隔离会话中再次通过 Lean；
+4. 自动修正必须有迭代次数、总耗时、成本和人工关闭开关；
+5. LeanCopilot 不可用时，`lean_check` 的基础验证能力必须继续工作。
