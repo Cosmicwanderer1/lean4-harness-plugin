@@ -1,7 +1,7 @@
 # lean4-harness-plugin
 
 > `deepseek-harness` 的 Lean 4 本地验证插件。
-> 作者：ygw｜适用环境：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
+> 作者：ygw｜当前发布版本：`0.1.1`｜适用环境：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
 
 `lean4-harness-plugin` 不替模型“猜”证明是否正确。模型生成 Lean 4 源码后，插件会调用本地 Lean 验证器，并把真实结果、诊断位置、错误信息和导入缓存状态返回给模型。模型据此修改代码并再次检查，直至 Lean 明确通过。
 
@@ -121,6 +121,7 @@ lean4-harness-plugin/
 └── tests/
     └── dsh-plugin.test.mjs             # Bundle 入口和工具契约测试
 ```
+`dist/` 是一个例外：它由 `npm run build` 从 `src/` 生成，但**经过构建和测试后的版本会提交到 Git**，作为固定 Commit 的受控运行产物。DSH STORE 不执行第三方的 `install`、`prepare`、`build` 或 `test` 脚本；因此不能依赖安装期构建来取得 `dist/index.js`。开发者修改 TypeScript 后必须重新构建、测试并一并提交对应的 `dist/` 变更。
 `dsh-plugin.js` 与 `src/index.ts` 的职责不同：前者由 deepseek-harness 加载，负责 Cordis 生命周期和模型工具；后者是可被其他 TypeScript 程序调用的验证核心 API。普通 Web 使用者只需要前者。
 
 ## 前置条件
@@ -163,6 +164,7 @@ Set-Location D:\lean4-harness-plugin
 npm install
 npm run build
 npm test
+npm run verify:distribution
 ```
 
 `npm test` 包含真实常驻 Lean LSP 回归测试，首次可能耗时约一分钟。它读取本地 `.olean`，不会重新下载或全量构建 Mathlib。
@@ -386,7 +388,22 @@ pnpm dsh --profile lean4 --dump-config
 pnpm dsh --profile lean4 --no-open --port 3080
 ```
 
-Git 安装会执行本仓库的 `prepare` 脚本生成 `dist/`。pnpm 若提示允许构建脚本，只应在确认固定提交可信后允许。GitHub 安装不会自动提供 `D:\mathlib4`；没有配置兼容的本地 Mathlib 4 时，插件无法验证 Mathlib 定理。
+固定 GitHub Commit 已包含 `dist/` 运行产物，安装不依赖 `prepare`、`install` 或其他安装期脚本。GitHub 安装不会自动提供 `D:\mathlib4`；没有配置兼容的本地 Mathlib 4 时，插件无法验证 Mathlib 定理。
+
+## DSH STORE 发行契约与权限边界
+
+本仓库遵循 DSH STORE 的“固定 Commit 可安装”约定，相关验收记录见 [docs/dsh-store-verification.md](docs/dsh-store-verification.md)。发行包的关键事实如下：
+
+| 项目 | 声明 |
+| --- | --- |
+| 固定运行产物 | 已提交 `dist/index.js`、`dist/index.d.ts` 及其同一构建的辅助文件。 |
+| 安装生命周期 | 没有 `preinstall`、`install`、`postinstall` 或 `prepare` 脚本。 |
+| Node.js | `>=22.19.0`。 |
+| DSH | 已在 `0.1.3-alpha.2` 的 Web Profile 验证；精确兼容性见 `package.json` 的 `dsh.compatibility`。 |
+| 平台 | 当前发行版仅声明 Windows（`win32`）；Lake 文件中的本地 Mathlib 路径是 `D:/mathlib4`。 |
+| 许可证 | [MIT License](LICENSE)。 |
+
+插件需要较高的本地能力，但每项能力都有明确范围：它会读取插件 Lake 工作区与本机 Lean/Mathlib `.olean` 缓存；为验证代码启动受控的 `lean --server`、`lake env`，且只有用户一次授权后才可构建已识别的精确 `Mathlib.*` 模块。它不读取或上传凭据，不调用 LeanCopilot 线上服务，不执行模型拼接的 shell 命令，不执行 `lake update`、`lake clean`、`lake exe`，也不修改 `D:\mathlib4`。这些能力信号可能使 Store 将插件列为需要用户审阅；它们不能也不应通过删除安全说明来隐藏。
 
 ## 故障排查
 

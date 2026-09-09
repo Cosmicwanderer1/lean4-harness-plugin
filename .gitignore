@@ -1,7 +1,6 @@
 # @author ygw
 
 node_modules/
-dist/
 .lake/
 lean/LeanHarnessSession_*/
 .idea/

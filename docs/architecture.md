@@ -2,7 +2,7 @@
 
 > 作者：ygw
 >
-> 当前实现：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
+> 当前发行版：`0.1.1`；当前实现：Windows 11、Lean 4.26.0、Mathlib 4、deepseek-harness `0.1.3-alpha.2`。
 > 本文明确区分“当前已实现”和“后续计划”；LeanCopilot 候选建议不是验证结果。
 
 ## 一句话定义
@@ -73,7 +73,7 @@ skills/                             DSH_HOME/skills 中已安装的可选 Skill
 scripts/                            .dsh-lean4-*/ 中的本机 Profile / 日志
 ```
 
-`dist/`、`node_modules/`、`lean/.lake/`、临时 LSP 会话和 `.dsh-*` Profile 都是本机生成物，不提交到 GitHub。GitHub 从源码安装时会运行 `prepare` 生成 `dist/`。
+`node_modules/`、`lean/.lake/`、临时 LSP 会话和 `.dsh-*` Profile 都是本机生成物，不提交到 GitHub。`dist/` 由 TypeScript 构建生成，但作为固定 Commit 的受控运行产物提交到 GitHub；这使 DSH STORE 无需运行任何第三方安装或构建脚本即可定位 `dist/index.js`。每次修改 `src/` 后，必须重新构建、测试并提交同步的 `dist/` 文件。
 
 ## 当前验证闭环（已实现）
 

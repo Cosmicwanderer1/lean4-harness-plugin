@@ -1,6 +1,6 @@
 {
   "name": "lean4-harness-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lean 4 service and Harness tools for deepseek-harness.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,9 +16,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tests/*.test.js tests/*.test.mjs",
+    "test": "npm run build && node --test dist/tests/formatter.test.js dist/tests/lean-repl.test.js tests/dsh-plugin.test.mjs tests/dsh-store-contract.test.mjs",
     "check": "npm run build",
-    "prepare": "npm run build"
+    "verify:distribution": "node scripts/verify-distribution.mjs"
   },
   "files": [
     "dist/",
@@ -33,11 +33,22 @@
     "skills/",
     "scripts/",
     "README.md",
-    "docs/"
+    "docs/",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "pluginType": "feature",
+    "compatibility": {
+      "dsh": "0.1.3-alpha.2",
+      "dshReleases": {
+        "0.1.3-alpha.2": "compatible"
+      },
+      "profiles": [
+        "web"
+      ]
     }
   },
   "engines": {
@@ -46,11 +57,23 @@
   "keywords": [
     "lean4",
     "deepseek-harness",
+    "dsh-plugin",
     "cordis",
     "formal-verification"
   ],
   "license": "MIT",
   "author": "ygw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cosmicwanderer1/lean4-harness-plugin.git"
+  },
+  "homepage": "https://github.com/Cosmicwanderer1/lean4-harness-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/Cosmicwanderer1/lean4-harness-plugin/issues"
+  },
+  "os": [
+    "win32"
+  ],
   "devDependencies": {
     "@types/node": "^26.4.1",
     "typescript": "^7.0.2"
