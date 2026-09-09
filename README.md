@@ -15,8 +15,6 @@
 - tactic state 格式化；
 - 可选的自然语言数学题规约 Skill。
 
-**当前尚未实现：** LeanCopilot 建议、自动修复闭环和项目级批量验证。即使未来接入 LeanCopilot，候选建议也必须重新交给 Lean 验证，不能直接视为正确证明。
-
 更详细的运行关系见 [docs/architecture.md](docs/architecture.md)。
 
 ## 先看结论：普通用户怎样使用
