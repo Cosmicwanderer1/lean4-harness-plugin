@@ -11,6 +11,7 @@ lean/LeanHarnessSession_*/
 .DS_Store
 .dsh-lean4-test/
 .source-identity-temp/
+.specstory/
 
 # Lean LSP / compilation validation sessions and deliberately failing probes.
 lean/.dsh-lean4-*/

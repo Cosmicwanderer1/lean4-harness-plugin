@@ -2,6 +2,10 @@
 
 面向 `deepseek-harness` 的 Lean 4 插件基础实现。当前版本包含一个常驻 Lean LSP 验证服务、源码检查工具、JSON 行 REPL 兼容适配和 tactic state Markdown 格式化器。
 
+## 设计架构
+
+面向 GitHub 读者的架构说明见 [docs/architecture.md](docs/architecture.md)。其中明确区分当前已经实现的验证闭环与后续计划接入的 LeanCopilot 建议能力。
+
 ## 目录
 
 ```text
