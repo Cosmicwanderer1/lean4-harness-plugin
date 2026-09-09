@@ -392,7 +392,7 @@ pnpm dsh --profile lean4 --no-open --port 3080
 
 ## DSH STORE 发行契约与权限边界
 
-本仓库遵循 DSH STORE 的“固定 Commit 可安装”约定，相关验收记录见 [docs/dsh-store-verification.md](docs/dsh-store-verification.md)。发行包的关键事实如下：
+本仓库遵循 DSH STORE 的“固定 Commit 可安装”约定。发行包的关键事实如下：
 
 | 项目 | 声明 |
 | --- | --- |
