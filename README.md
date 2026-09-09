@@ -25,7 +25,7 @@ lean4-harness-plugin/
 
 ## 安装与构建
 
-需要 Node.js 20 或更高版本，并确保 `lean`、`lake` 已加入 PATH。Windows 11 下可使用 PowerShell 执行：
+需要 Node.js 22.19 或更高版本（与当前 deepseek-harness 源码运行要求一致），并确保 `lean`、`lake` 已加入 PATH。Windows 11 下可使用 PowerShell 执行：
 
 ```powershell
 npm install
@@ -35,6 +35,39 @@ Set-Location lean
 lake build
 lake env lean Main.lean
 ```
+
+## 作为 DeepSeek Harness 插件安装
+
+本仓库本身现在是一个可安装的 DSH 组合包（bundle），而不再只是一份供 Harness 手工迁入的设计。它的 `package.json` 声明 `dsh.bundle`，`cordis.patch.yml` 将 `lean4-harness-plugin/dsh` 插入目标 Profile，`dsh-plugin.js` 则是仅负责 Cordis 生命周期和工具注册的薄适配层；常驻 Lean 服务和诊断格式化仍来自本仓库的 `dist/` 核心实现。
+
+为避免与旧的 `dsh-experimental-lean4-profile` 重复注册同名 `lean_check`，首次测试请使用一个独立的 DSH_HOME 和独立 Profile。请在 `D:\deepseek-harness\deepseek-harness` 源码目录执行：
+
+```powershell
+$env:DSH_HOME = 'D:\lean4-harness-plugin\.dsh-lean4-plugin-test'
+pnpm dsh plugin --profile web add 'link:D:\lean4-harness-plugin'
+pnpm dsh --profile web --dump-config
+pnpm dsh web
+```
+
+`--dump-config` 的结果中应出现 `# == lean4-harness-plugin` 配置层以及 `lean4-harness-plugin/dsh` 条目。代码修改后，先运行 `npm run build`，然后重启 Web 服务；对于仅改动 `dsh-plugin.js` 或 `dist/` 内容的情况，无需重新执行 `dsh plugin add`。若修改 `cordis.patch.yml` 或 `package.json` 的 Bundle 元数据，应先移除再重新添加本地 Bundle：
+
+```powershell
+pnpm dsh plugin --profile web remove lean4-harness-plugin
+pnpm dsh plugin --profile web add 'link:D:\lean4-harness-plugin'
+```
+
+Bundle 默认使用其自身 `lean/` 子目录作为 Lake 工作区，因此不会把 `D:\lean4-harness-plugin` 写死在运行时代码中；可在 Profile 的 `cordis.patch.yml` 中通过 `workspaceRoot`、`mathlibRoot`、`lakeCommand`、`leanCommand`、`requestTimeoutMs`、`buildTimeoutMs`、`prewarm`、`prewarmTimeoutMs`、`prewarmSource` 和 `maxResultChars` 覆盖配置。默认 `prewarm: false` 表示首个 `lean_check` 才启动 Lean；此后服务会常驻并复用同一 LSP 文档。若希望把首次导入成本放在 Web 启动阶段，可将它改为 `true`。
+
+从 GitHub 安装时应固定到经审阅的提交，而不是浮动分支。Git 安装的是源码，DSH 会通过本仓库的 `prepare` 脚本构建 `dist/`；首次安装若 pnpm 要求明确允许构建，请只在确认提交可信后，按 pnpm 输出提示在目标 Profile 的 `pnpm-workspace.yaml` 中添加 `lean4-harness-plugin: true`，再重试安装：
+
+```powershell
+$env:DSH_HOME = 'D:\dsh-lean4'
+pnpm dsh plugin --profile lean4 add 'github:Cosmicwanderer1/lean4-harness-plugin#<已审阅的提交哈希>'
+pnpm dsh --profile lean4 --dump-config
+pnpm dsh --profile lean4 web
+```
+
+当前 Bundle 针对 deepseek-harness `0.1.3-alpha.2` 的工具接口完成验证；DSH 仍处于预览阶段，升级 Harness 后应先执行 `--dump-config` 和一次 `lean_check` 回归，再用于正式证明任务。Bundle 不额外安装 `@deepseek-ai/dsh-tools`：它通过 Harness 已注入的 `ctx.tools` 注册标准 JSON Schema 工具，避免 GitHub 安装时下载与宿主版本不匹配或无权限访问的内部包。
 
 本项目不强制绑定某个未公开的 Harness SDK。宿主只需要提供以下两个注册函数：
 
@@ -81,7 +114,7 @@ lean/lean-toolchain 当前锁定到 leanprover/lean4:v4.26.0，并通过 lean/la
 
 ## deepseek-harness 集成中的按需 Mathlib 补齐
 
-本项目在 `D:/deepseek-harness/deepseek-harness` 的实验性集成层提供 `lean_check`。它先检查源码的显式导入是否已有 `.olean`：缓存命中时直接交给常驻 Lean 服务；缺失精确 `Mathlib.*` 模块时，通过 Harness 的用户授权界面列出模块名称和精确构建目标。只有用户选择一次允许后，服务才会以固定参数运行等价于 `lake build <精确模块>` 的受控构建，随后重启常驻 Lean 服务并再次验证同一份源码。
+本 Bundle 的 `lean_check` 先检查源码的显式导入是否已有 `.olean`：缓存命中时直接交给常驻 Lean 服务；缺失精确 `Mathlib.*` 模块时，通过 Harness 的用户授权界面列出模块名称和精确构建目标。只有用户选择一次允许后，服务才会以固定参数运行等价于 `lake build <精确模块>` 的受控构建，随后重启常驻 Lean 服务并再次验证同一份源码。
 
 模型不能自行调用 `lake build`、`lake update`、`lake clean` 或 `lake exe`，也不能修改 `D:/mathlib4`。用户拒绝、取消、授权通道不可用、缺失非 Mathlib 模块，或使用聚合 `import Mathlib` 时，插件只返回可读状态，不进行构建。Lean 编译结果仍是唯一的验证依据；LeanCopilot 目前未接入。
 

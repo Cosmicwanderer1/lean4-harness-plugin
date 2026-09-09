@@ -1,0 +1,14 @@
+# @author ygw
+#
+# Public DeepSeek Harness bundle layer. The DSH profile that installs this package
+# resolves the package name below to the `./dsh` export in package.json.
+
+- insert:
+    - id: lean4-harness-plugin
+      name: 'lean4-harness-plugin/dsh'
+      config:
+        requestTimeoutMs: 600000
+        buildTimeoutMs: 600000
+        prewarm: false
+        prewarmSource: |
+          import Mathlib.Data.Nat.Basic

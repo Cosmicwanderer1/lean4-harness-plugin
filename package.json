@@ -9,15 +9,39 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./dsh": {
+      "import": "./dsh-plugin.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tests/*.test.js",
-    "check": "npm run build"
+    "test": "npm run build && node --test dist/tests/*.test.js tests/*.test.mjs",
+    "check": "npm run build",
+    "prepare": "npm run build"
+  },
+  "files": [
+    "dist/",
+    "dsh-plugin.js",
+    "cordis.patch.yml",
+    "lean/lean-toolchain",
+    "lean/lakefile.lean",
+    "lean/lake-manifest.json",
+    "lean/Lean4Harness.lean",
+    "lean/Main.lean",
+    "lean/README.md",
+    "skills/",
+    "scripts/",
+    "README.md",
+    "docs/"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "keywords": [
     "lean4",

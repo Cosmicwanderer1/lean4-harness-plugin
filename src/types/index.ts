@@ -71,6 +71,8 @@ export interface LeanReplConfig {
   cwd?: string;
   /** 单次请求超时毫秒数，默认 120000，覆盖首次加载本地 Mathlib 产物的时间。 */
   requestTimeoutMs?: number;
+  /** 用户授权后构建精确缺失 Mathlib 模块的最大时长，默认 600000。 */
+  buildTimeoutMs?: number;
   /** Lean 编译器命令，默认使用 PATH 中的 lean。 */
   leanCommand?: string;
   /** Lake 命令，用于读取工作区环境变量，默认使用 PATH 中的 lake。 */
@@ -81,6 +83,32 @@ export interface LeanReplConfig {
   serverCommand?: string;
   /** LSP 服务参数，默认是 --server。 */
   serverArgs?: string[];
+}
+
+/** 一次源码导入与本地 `.olean` 缓存的核验结果。 */
+export interface LeanImportInspection {
+  /** 源码中按出现顺序提取且去重的导入模块。 */
+  imports: string[];
+  /** 已在当前 Lake/Lean 搜索路径中找到 `.olean` 的模块。 */
+  cachedImports: string[];
+  /** 没有找到 `.olean` 的模块。 */
+  missingImports: string[];
+  /** 可在获得一次明确授权后构建的精确 `Mathlib.*` 模块。 */
+  buildTargets: string[];
+  /** 不属于受控构建边界的缺失模块。 */
+  unbuildableImports: string[];
+}
+
+/** 一次用户明确授权后的受控 Lake 构建结果。 */
+export interface LeanImportBuildResult {
+  /** 实际传递给 Lake 的精确 Mathlib 模块名。 */
+  buildTargets: string[];
+  /** Lake 是否以零退出码完成。 */
+  success: boolean;
+  /** 截断后的标准输出、标准错误或基础设施错误。 */
+  output: string;
+  /** Lake 正常退出时的退出码。 */
+  exitCode?: number;
 }
 
 /** 源码检查参数。 */

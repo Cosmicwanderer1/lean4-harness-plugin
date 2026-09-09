@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { basename, delimiter, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { ObjectUtils } from "../utils/object-utils.js";
@@ -9,12 +9,18 @@ import type {
   LeanCheckOptions,
   LeanCheckResult,
   LeanDiagnostic,
+  LeanImportBuildResult,
+  LeanImportInspection,
   LeanReplConfig,
   ReplRequest,
   ReplResponse
 } from "../types/index.js";
 
 type LspId = string | number;
+
+const DEFAULT_BUILD_TIMEOUT_MS = 600000;
+const MAX_BUILD_OUTPUT_CHARS = 1000000;
+const MATHLIB_MODULE_PATTERN = /^Mathlib\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 
 interface LspMessage {
   jsonrpc: "2.0";
@@ -36,6 +42,11 @@ interface VersionedDiagnostics {
   diagnostics: LeanDiagnostic[];
 }
 
+interface PendingBuildInspection {
+  workspace: string;
+  buildTargets: readonly string[];
+}
+
 /**
  * 管理 Lean 4 常驻验证进程，并提供兼容 JSON 行 REPL 的请求能力。
  * 默认通过 Lake 环境直接启动 lean --server，并复用同一 LSP 文档的 Mathlib 导入状态。
@@ -49,7 +60,7 @@ export class LeanReplService {
   private readonly documentVersions = new Map<string, number>();
   private readonly config: Required<Pick<
     LeanReplConfig,
-    "command" | "requestTimeoutMs" | "leanCommand" | "lakeCommand" | "replMode" | "serverCommand"
+    "command" | "requestTimeoutMs" | "buildTimeoutMs" | "leanCommand" | "lakeCommand" | "replMode" | "serverCommand"
   >> & LeanReplConfig;
   private lspBuffer = Buffer.alloc(0);
   private serverReady?: Promise<void>;
@@ -59,6 +70,9 @@ export class LeanReplService {
   private validationDocumentPath?: string;
   private serverStderr = "";
   private checkQueue: Promise<void> = Promise.resolve();
+  private lakeEnvironment?: NodeJS.ProcessEnv;
+  private lakeEnvironmentCwd?: string;
+  private readonly pendingBuildInspections = new Map<LeanImportInspection, PendingBuildInspection>();
 
   /**
    * 创建 Lean 验证服务。
@@ -70,6 +84,7 @@ export class LeanReplService {
       ...config,
       command: config.command ?? "lean-repl",
       requestTimeoutMs: config.requestTimeoutMs ?? 120000,
+      buildTimeoutMs: config.buildTimeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS,
       leanCommand: config.leanCommand ?? "lean",
       lakeCommand: config.lakeCommand ?? "lake",
       replMode: config.replMode ?? "lsp",
@@ -117,6 +132,73 @@ export class LeanReplService {
   }
 
   /**
+   * 检查 Lean 源码的精确导入是否可由当前本地 `.olean` 缓存满足。
+   * 该方法只读取 Lake 环境和本地文件系统，绝不触发构建、缓存下载或网络访问。
+   * @param source 完整 Lean 源码。
+   * @param cwd 可选的 Lake 工作区目录。
+   * @returns {Promise<LeanImportInspection>} 结构化的缓存命中、缺失模块和最小可授权构建目标。
+   */
+  async inspectImports(source: string, cwd?: string): Promise<LeanImportInspection> {
+    if (typeof source !== "string" || source.length === 0) {
+      throw new Error("Lean 导入检查必须提供非空 source 字符串。");
+    }
+    const workspace = resolve(cwd ?? this.config.cwd ?? process.cwd());
+    const environment = await this.ensureLakeEnvironment(workspace);
+    const imports = extractLeanImports(source);
+    const searchPaths = leanSearchPaths(environment, workspace);
+    const cachedImports: string[] = [];
+    const missingImports: string[] = [];
+    for (const moduleName of imports) {
+      if (await hasModuleArtifact(moduleName, searchPaths)) {
+        cachedImports.push(moduleName);
+      } else {
+        missingImports.push(moduleName);
+      }
+    }
+    const buildTargets = missingImports.filter(moduleName => MATHLIB_MODULE_PATTERN.test(moduleName));
+    const unbuildableImports = missingImports.filter(moduleName => !MATHLIB_MODULE_PATTERN.test(moduleName));
+    const inspection: LeanImportInspection = {
+      imports,
+      cachedImports,
+      missingImports,
+      buildTargets,
+      unbuildableImports
+    };
+    // Only a result created by this service instance and still held in this map can authorize a
+    // build. This prevents a caller from submitting arbitrary Lake targets after user approval.
+    if (buildTargets.length > 0 && unbuildableImports.length === 0) {
+      this.pendingBuildInspections.set(inspection, {
+        workspace,
+        // Preserve the exact target snapshot. Object identity alone is insufficient because a
+        // caller could mutate a JavaScript array after the user has reviewed it.
+        buildTargets: [...buildTargets]
+      });
+    }
+    return inspection;
+  }
+
+  /**
+   * 构建刚刚由本服务检查并经调用方授权的精确 Mathlib 模块。
+   * @param inspection 由同一服务的 {@link inspectImports} 返回且尚未使用的检查对象。
+   * @param signal 可选的调用取消信号。
+   * @returns {Promise<LeanImportBuildResult>} 受限 Lake 构建结果。
+   */
+  async buildMissingImports(inspection: LeanImportInspection, signal?: AbortSignal): Promise<LeanImportBuildResult> {
+    validateBuildInspection(inspection);
+    const pendingInspection = this.pendingBuildInspections.get(inspection);
+    if (ObjectUtils.isEmpty(pendingInspection)) {
+      throw new Error("受控 Mathlib 构建只能使用同一服务刚刚产生且尚未使用的导入检查结果。");
+    }
+    if (!sameStringList(inspection.buildTargets, (pendingInspection as PendingBuildInspection).buildTargets)) {
+      throw new Error("受控 Mathlib 构建目标与检查时列出的精确模块不一致。");
+    }
+    this.pendingBuildInspections.delete(inspection);
+    const queuedBuild = this.checkQueue.then(() => this.runMissingImportBuild((pendingInspection as PendingBuildInspection).workspace, inspection, signal));
+    this.checkQueue = queuedBuild.then(() => undefined, () => undefined);
+    return queuedBuild;
+  }
+
+  /**
    * 停止常驻进程并清理会话文件。
    * @returns {void} 无返回值。
    */
@@ -125,6 +207,9 @@ export class LeanReplService {
     this.process = undefined;
     this.serverReady = undefined;
     this.serverCwd = undefined;
+    this.lakeEnvironment = undefined;
+    this.lakeEnvironmentCwd = undefined;
+    this.pendingBuildInspections.clear();
     if (!ObjectUtils.isEmpty(runningProcess)) {
       (runningProcess as ChildProcessWithoutNullStreams).kill();
     }
@@ -144,6 +229,139 @@ export class LeanReplService {
    */
   isRunning(): boolean {
     return !ObjectUtils.isEmpty(this.process);
+  }
+
+  /**
+   * 在验证队列中执行一份已授权的精确模块构建。
+   * @param workspace Lake 工作区绝对路径。
+   * @param inspection 已校验的精确模块清单。
+   * @param signal 可选的调用取消信号。
+   * @returns {Promise<LeanImportBuildResult>} Lake 的受限构建结果。
+   */
+  private async runMissingImportBuild(
+    workspace: string,
+    inspection: LeanImportInspection,
+    signal?: AbortSignal
+  ): Promise<LeanImportBuildResult> {
+    if (signal?.aborted) throw abortError(signal.reason);
+    const environment = await this.ensureLakeEnvironment(workspace);
+    // Lake may replace `.olean` files. Close the persistent reader first so Windows does not keep
+    // stale handles open and the next check always creates a fresh Lean view of the artifact set.
+    if (this.serverCwd === workspace || this.isReadyFor(workspace)) {
+      await this.stopServerForArtifactChange();
+    }
+    return this.runLakeBuild(workspace, environment, inspection.buildTargets, signal);
+  }
+
+  /**
+   * 关闭现有 Lean 读取进程并等待其释放可能被 Lake 替换的 `.olean` 句柄。
+   * @returns {Promise<void>} 进程退出或有限等待期结束后返回。
+   */
+  private async stopServerForArtifactChange(): Promise<void> {
+    const runningProcess = this.process;
+    const directory = this.sessionDirectory;
+    this.process = undefined;
+    this.serverReady = undefined;
+    this.serverCwd = undefined;
+    this.lakeEnvironment = undefined;
+    this.lakeEnvironmentCwd = undefined;
+    this.pendingBuildInspections.clear();
+    this.documentVersions.clear();
+    this.diagnosticsByUri.clear();
+    this.validationDocumentUri = undefined;
+    this.validationDocumentPath = undefined;
+    this.sessionDirectory = undefined;
+    this.rejectPending(new Error("Lean 验证服务因受控 Mathlib 构建而重启。"));
+    if (!ObjectUtils.isEmpty(runningProcess)) {
+      const child = runningProcess as ChildProcessWithoutNullStreams;
+      const exited = waitForProcessExit(child);
+      child.kill();
+      await exited;
+    }
+    if (!ObjectUtils.isEmpty(directory)) {
+      await rm(directory as string, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Run Lake with a fixed argument array and bounded captured output.
+   * @param workspace Lake 工作区绝对路径。
+   * @param environment 已解析的 Lake 环境变量。
+   * @param targets 已授权的精确 Mathlib 模块名。
+   * @param signal 可选的调用取消信号。
+   * @returns {Promise<LeanImportBuildResult>} 不泄露环境变量的构建摘要。
+   */
+  private runLakeBuild(
+    workspace: string,
+    environment: NodeJS.ProcessEnv,
+    targets: readonly string[],
+    signal?: AbortSignal
+  ): Promise<LeanImportBuildResult> {
+    return new Promise<LeanImportBuildResult>((resolveBuild, rejectBuild) => {
+      let stdout = "";
+      let stderr = "";
+      let completed = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let childProcess: ChildProcessWithoutNullStreams;
+      const append = (current: string, chunk: Buffer): string => (current + chunk.toString()).slice(-MAX_BUILD_OUTPUT_CHARS);
+      const settle = (result: LeanImportBuildResult): void => {
+        if (completed) return;
+        completed = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        resolveBuild(result);
+      };
+      const abort = (): void => {
+        childProcess.kill();
+        settle({
+          buildTargets: [...targets],
+          success: false,
+          output: mergeBuildOutput(stdout, `${stderr}\n受控 Mathlib 构建已取消。`)
+        });
+      };
+      try {
+        childProcess = spawn(this.config.lakeCommand, ["build", ...targets], {
+          cwd: workspace,
+          env: environment,
+          stdio: "pipe",
+          windowsHide: true
+        });
+      } catch (error) {
+        rejectBuild(error);
+        return;
+      }
+      childProcess.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
+      childProcess.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+      childProcess.once("error", (error) => {
+        settle({
+          buildTargets: [...targets],
+          success: false,
+          output: mergeBuildOutput(stdout, `${stderr}\n${error.message}`)
+        });
+      });
+      childProcess.once("exit", (code, exitSignal) => {
+        const exitDetail = exitSignal === null ? "" : `\nLake 被信号 ${exitSignal} 终止。`;
+        settle({
+          buildTargets: [...targets],
+          success: code === 0,
+          output: mergeBuildOutput(stdout, stderr + exitDetail),
+          ...(code === null ? {} : { exitCode: code })
+        });
+      });
+      timer = setTimeout(() => {
+        childProcess.kill();
+        settle({
+          buildTargets: [...targets],
+          success: false,
+          output: mergeBuildOutput(stdout, `${stderr}\n受控 Mathlib 构建超过 ${this.config.buildTimeoutMs}ms 限制。`)
+        });
+      }, this.config.buildTimeoutMs);
+      if (signal?.aborted) {
+        abort();
+      } else {
+        signal?.addEventListener("abort", abort, { once: true });
+      }
+    });
   }
 
   private async runPersistentCheck(options: LeanCheckOptions): Promise<LeanCheckResult> {
@@ -203,7 +421,7 @@ export class LeanReplService {
     this.lspBuffer = Buffer.alloc(0);
     this.serverStderr = "";
     // Lake 只负责计算环境变量；直接启动 Lean 可以避免 Windows 下多层子进程管道不透传 LSP 数据。
-    const lakeEnvironment = await this.loadLakeEnvironment(workspace);
+    const lakeEnvironment = await this.ensureLakeEnvironment(workspace);
     const childProcess = spawn(this.config.serverCommand, this.config.serverArgs ?? ["--server"], {
       cwd: workspace,
       env: lakeEnvironment,
@@ -279,6 +497,21 @@ export class LeanReplService {
         resolveEnvironment(this.parseEnvironmentOutput(stdout));
       });
     });
+  }
+
+  /**
+   * 缓存同一 Lake 工作区已解析的环境，避免导入检查与常驻服务重复执行 `lake env`。
+   * @param workspace Lake 工作区绝对路径。
+   * @returns {Promise<NodeJS.ProcessEnv>} 当前工作区可复用的环境变量。
+   */
+  private async ensureLakeEnvironment(workspace: string): Promise<NodeJS.ProcessEnv> {
+    if (!ObjectUtils.isEmpty(this.lakeEnvironment) && this.lakeEnvironmentCwd === workspace) {
+      return this.lakeEnvironment as NodeJS.ProcessEnv;
+    }
+    const environment = await this.loadLakeEnvironment(workspace);
+    this.lakeEnvironment = environment;
+    this.lakeEnvironmentCwd = workspace;
+    return environment;
   }
 
   /**
@@ -492,6 +725,9 @@ export class LeanReplService {
     this.process = undefined;
     this.serverReady = undefined;
     this.serverCwd = undefined;
+    this.lakeEnvironment = undefined;
+    this.lakeEnvironmentCwd = undefined;
+    this.pendingBuildInspections.clear();
     this.documentVersions.clear();
     this.diagnosticsByUri.clear();
     this.rejectPending(error);
@@ -536,4 +772,121 @@ export class LeanReplService {
       throw new Error("Lean 源码检查参数必须包含 source 字符串。");
     }
   }
+}
+
+/**
+ * 从完整 Lean 源码提取按出现顺序去重的普通 import 模块名。
+ * @param source Lean 源码。
+ * @returns {string[]} 仅包含显式模块名的导入列表。
+ */
+export function extractLeanImports(source: string): string[] {
+  const imports: string[] = [];
+  const seen = new Set<string>();
+  for (const line of source.split(/\r?\n/)) {
+    const match = /^\s*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b/.exec(line);
+    const moduleName = match?.[1];
+    if (moduleName === undefined || seen.has(moduleName)) continue;
+    seen.add(moduleName);
+    imports.push(moduleName);
+  }
+  return imports;
+}
+
+/**
+ * 组合 Lake 环境与工作区构建目录中的 Lean 模块搜索根。
+ * @param environment `lake env` 解析出的环境变量。
+ * @param workspace Lake 工作区绝对路径。
+ * @returns {string[]} 去重后的本地 `.olean` 搜索目录。
+ */
+function leanSearchPaths(environment: NodeJS.ProcessEnv, workspace: string): string[] {
+  const configured = environment.LEAN_PATH ?? "";
+  const roots = configured.split(delimiter).map(item => item.trim()).filter(item => item !== "");
+  roots.push(join(workspace, ".lake", "build", "lib", "lean"));
+  return [...new Set(roots)];
+}
+
+/**
+ * 判断某个模块在任一已解析搜索目录中是否已有编译产物。
+ * @param moduleName Lean 模块名。
+ * @param searchPaths 本地库根目录。
+ * @returns {Promise<boolean>} 找到 `.olean` 时返回 true。
+ */
+async function hasModuleArtifact(moduleName: string, searchPaths: readonly string[]): Promise<boolean> {
+  const segments = moduleName.split(".");
+  for (const root of searchPaths) {
+    try {
+      await access(join(root, ...segments) + ".olean");
+      return true;
+    } catch {
+      // Continue searching the remaining local roots; this path is expected to be absent often.
+    }
+  }
+  return false;
+}
+
+/**
+ * 验证一个检查对象只能请求精确 Mathlib 子模块，且不存在其它缺失导入。
+ * @param inspection 不可信的跨边界检查对象。
+ * @returns {void} 合法时无返回值。
+ */
+function validateBuildInspection(inspection: LeanImportInspection): void {
+  if (!Array.isArray(inspection?.buildTargets) || inspection.buildTargets.length === 0) {
+    throw new Error("受控 Mathlib 构建必须包含至少一个精确模块目标。");
+  }
+  if (!Array.isArray(inspection.unbuildableImports) || inspection.unbuildableImports.length > 0) {
+    throw new Error("存在无法受控构建的缺失导入，拒绝执行 Lake 构建。");
+  }
+  if (inspection.buildTargets.some(target => !MATHLIB_MODULE_PATTERN.test(target))) {
+    throw new Error("受控 Mathlib 构建只接受精确 Mathlib 子模块名。");
+  }
+  if (new Set(inspection.buildTargets).size !== inspection.buildTargets.length) {
+    throw new Error("受控 Mathlib 构建目标不能重复。");
+  }
+}
+
+/**
+ * 比较两个模块列表是否保持检查时的顺序和内容完全一致。
+ * @param left 第一个模块列表。
+ * @param right 第二个模块列表。
+ * @returns {boolean} 逐项相等时返回 true。
+ */
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * 合并并限制 Lake 的标准输出与标准错误，防止工具结果无限增长。
+ * @param stdout Lake 标准输出。
+ * @param stderr Lake 标准错误或控制信息。
+ * @returns {string} 有界的可读输出。
+ */
+function mergeBuildOutput(stdout: string, stderr: string): string {
+  return [stdout, stderr].filter(value => value.trim() !== "").join("\n").slice(-MAX_BUILD_OUTPUT_CHARS);
+}
+
+/**
+ * 将未知取消原因转换为标准 Error。
+ * @param reason 取消原因。
+ * @returns {Error} 可抛出的错误对象。
+ */
+function abortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  if (typeof reason === "string" && reason !== "") return new Error(reason);
+  return new Error("受控 Mathlib 构建已取消。");
+}
+
+/**
+ * 等待一个已终止的子进程退出，但不会因异常进程无限阻塞后续验证。
+ * @param child 已请求结束的 Lean 子进程。
+ * @returns {Promise<void>} 进程退出或五秒安全等待期到达后返回。
+ */
+function waitForProcessExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolveExit => {
+    const timer = setTimeout(resolveExit, 5000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolveExit();
+    });
+  });
 }

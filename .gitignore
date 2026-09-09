@@ -10,6 +10,7 @@ lean/LeanHarnessSession_*/
 *.tmp
 .DS_Store
 .dsh-lean4-test/
+.dsh-lean4-plugin-test/
 .source-identity-temp/
 .specstory/
 

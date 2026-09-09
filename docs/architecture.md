@@ -71,7 +71,7 @@ flowchart TB
 
 ## 缺失模块与授权边界
 
-只有缺少明确的 `Mathlib.*` 子模块时，集成层才会向用户展示模块和精确构建目标，并请求一次授权。用户批准后，只允许构建该授权目标和 Lake 的必要依赖，服务重启后再验证原始源码。
+只有缺少明确的 `Mathlib.*` 子模块时，Bundle 才会向用户展示模块和精确构建目标，并请求一次授权。用户批准后，只允许构建该授权目标和 Lake 的必要依赖，服务重启后再验证原始源码。
 
 以下情况均不会触发构建：用户拒绝或取消、授权通道不可用、缺失的不是 Mathlib 子模块，以及使用顶层聚合导入 `import Mathlib`。模型也被最终工具守卫阻止直接运行 `lake build`、`lake update`、`lake clean`、`lake exe` 或修改 `D:/mathlib4`。
 
@@ -96,3 +96,9 @@ LeanCopilot 输出始终只是候选建议。后续接入将通过独立的建�
 - GitHub 仓库保存可复用的源码、配置、脚本、README、测试、Skill 和本文件。
 - `.specstory/` 保存本机开发过程、会话记录和工作草稿，已被 `.gitignore` 排除，不会上传。
 - `node_modules/`、`dist/`、`lean/.lake/` 和临时 Lean 验证会话也只保留在本机。
+
+## DSH Bundle 接入方式
+
+本仓库也是一个可安装的 DSH Bundle：`package.json` 的 `dsh.bundle` 指向 `cordis.patch.yml`，该配置层加载 `lean4-harness-plugin/dsh`。此入口只承担 Cordis 生命周期、模型工具注册和最终 Mathlib 工具守卫；它直接复用同一仓库 `dist/` 中的 `LeanReplService` 与 `LeanFormatter`，避免在 `deepseek-harness` 源码目录维护第二份验证核心。适配层通过宿主已经注入的 `ctx.tools` 注册标准 JSON Schema 工具，不将 `@deepseek-ai/dsh-tools` 作为独立发行依赖，避免 Git 安装时出现内部包下载、授权或版本漂移问题。
+
+开发时使用 `dsh plugin --profile <名称> add link:<插件绝对路径>`。DSH 将本地仓库链接到该 Profile 的依赖目录，并应用 Bundle 的 patch；启动该 Profile 后，模型即可获得 `lean_check`、`lean_repl_request` 与 `lean_format_tactic_state`。默认在首次 `lean_check` 时启动 Lean，之后保留同一常驻 LSP 文档；需要把首个导入成本转移到 Profile 启动阶段时，才显式设置 `prewarm: true`。源码改动后重新构建插件并重启 DSH 即可生效；只有 Bundle 元数据或 patch 改动才需要移除并重新添加。分发时也可使用 `github:Cosmicwanderer1/lean4-harness-plugin#<已审阅提交哈希>`；由于 Git 安装从源码执行 `prepare` 构建，用户必须按 pnpm 的提示明确授予该可信提交构建权限。
