@@ -73,7 +73,7 @@ lean/ Lake 工作区 ──── D:/mathlib4 的本地 .olean 缓存
 
 ## 当前真实目录结构
 
-此前 README 只展示了 `lean/` 和 `src/`，这是不完整的。以下是当前需要纳入版本控制的真实结构：
+以下是当前需要纳入版本控制的真实结构：
 
 ```text
 lean4-harness-plugin/
@@ -121,18 +121,6 @@ lean4-harness-plugin/
 └── tests/
     └── dsh-plugin.test.mjs             # Bundle 入口和工具契约测试
 ```
-
-以下目录是本机生成物，已被 `.gitignore` 排除；它们不应提交，也不应被 GitHub 使用者假定已经存在：
-
-```text
-node_modules/                 # Node 依赖
-dist/                         # npm run build 生成的 JavaScript 和类型声明
-lean/.lake/                   # 当前 Lean 工作区构建产物
-lean/LeanHarnessSession_*/    # 临时 Lean LSP 验证会话
-.dsh-lean4-test/              # 本机隔离 Profile、日志和会话
-.specstory/                   # 本机开发过程记录
-```
-
 `dsh-plugin.js` 与 `src/index.ts` 的职责不同：前者由 deepseek-harness 加载，负责 Cordis 生命周期和模型工具；后者是可被其他 TypeScript 程序调用的验证核心 API。普通 Web 使用者只需要前者。
 
 ## 前置条件
@@ -445,4 +433,4 @@ createLean4Plugin({
 - GitHub 仓库：[Cosmicwanderer1/lean4-harness-plugin](https://github.com/Cosmicwanderer1/lean4-harness-plugin)
 - 当前 Bundle 已在 deepseek-harness `0.1.3-alpha.2` 的真实独立 Profile 中启动验证。
 - DSH 仍处于预览期。升级 Harness 后，请先执行 `--dump-config`，再使用一个小型 Lean 定理实际调用 `lean_check` 回归验证。
-- Lean 诊断是唯一的成功依据；模型自评、字符串匹配以及未来 LeanCopilot 的候选建议都不能代替 Lean 验证。
+- Lean 诊断是唯一的成功依据。
