@@ -17,7 +17,7 @@
 
 更详细的运行关系见 [docs/architecture.md](docs/architecture.md)。
 
-## 先看结论：普通用户怎样使用
+## 怎样使用
 
 如果你已经打开 `http://127.0.0.1:3080/`，并且当前 Web Profile 已加载本插件，那么不需要手动启动 Lean，也不需要填写工具 JSON。只需新建对话，给模型数学题，并明确要求它在完成前调用 `lean_check`。
 
