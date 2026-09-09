@@ -34,6 +34,21 @@ git diff --check
 
 然后将 `src/`、同步生成的 `dist/`、manifest 与文档作为同一次提交的一部分。若 `dist/` 没有变更，必须先确认本次源码改动确实不影响 TypeScript 输出。
 
+## 本次实际验收证据
+
+2026-09-09 在 Windows 11 本机完成了版本 `0.1.1` 的一次性验收，固定来源为 Commit [`35508439b4883d4f844459b56f3c57a9a79f3ab6`](https://github.com/Cosmicwanderer1/lean4-harness-plugin/commit/35508439b4883d4f844459b56f3c57a9a79f3ab6)。结果如下：
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm test` | 7 项通过、0 项失败；包含常驻 Lean LSP、缓存检查、Bundle 工具契约和 Store 发行契约。 |
+| `npm run verify:distribution` | 通过；确认 `LICENSE`、canonical `repository`、精确 DSH 兼容性、`dist/index.js`、`dist/index.d.ts` 和无安装期脚本。 |
+| 固定产物预览 | `npm pack --dry-run` 包含 `dist/`、许可证、Bundle 入口与发行文档。 |
+| 一次性 Profile 安装 | 在临时 `DSH_HOME` 的 `web` Profile 中以 `link:D:\\lean4-harness-plugin` 安装成功；合成配置出现唯一的 `lean4-harness-plugin/dsh`。 |
+| 一次性 Web 启动 | Profile 在临时端口监听；未携带临时令牌的请求返回 `401`，携带令牌的本机请求返回 `200`。令牌未写入仓库或本文档。 |
+| 一次性卸载 | 停止临时服务后移除 `lean4-harness-plugin`；重新导出的 Profile 配置不再含有该入口。 |
+
+这是一组本机、一次性的安装和启动证据，不等同于 DSH STORE 的独立安全审查，也不替代不同 DSH 版本或其他电脑上的验证。
+
 ## 一次性 Profile 验收步骤
 
 以下步骤仅用于隔离验收，不应在日常真实 `DSH_HOME` 中执行。它不会删除 Lean、Mathlib、插件源仓库或其他 DSH Profile。
